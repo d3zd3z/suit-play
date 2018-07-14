@@ -6,8 +6,10 @@
 
 (provide
   (struct-out cbor-tag)
-  (struct-out cbor-null)
-  write-cbor)
+  cbor-null-object cbor-null?
+  write-cbor read-cbor
+  encode-cbor decode-cbor
+  tout)
 
 ;;; CBOR tags need their own representation, which we represent with
 ;;; this transparent struct.  The first field is the tag number, and
@@ -18,9 +20,18 @@
 ;;; check for it.
 (struct cbor-null ())
 
+;;; Create a single instance, and don't export the constructor.
+(define cbor-null-object (cbor-null))
+
 ;;; Perform body with writes going to a byte-string that is returned.
 (define-syntax-rule (let-to-bytes body ...)
   (with-output-to-bytes
+    (lambda ()
+      body ...)))
+
+(define-syntax-rule (let-from-bytes (bstr) body ...)
+  (with-input-from-bytes
+    bstr
     (lambda ()
       body ...)))
 
@@ -54,6 +65,29 @@
 	[else
 	 (write-byte (bitwise-ior (arithmetic-shift tag 5) 27))
 	 (write-integer value 8 #f)]))
+
+;;; Reads a cbor tag/val, and returns two values, the tag, and the
+;;; number associated with it.  The meaning of the number depends on
+;;; the particular tag.
+(define (read-tagval)
+  (define tagval (read-byte))
+  (define tag (arithmetic-shift tagval -5))
+  (define value (bitwise-and tagval #x1f))
+  (cond [(< value 24)
+	 (values tag value)]
+	[(= value 24)
+	 (let ([value (read-byte)])
+	   (values tag value))]
+	[(= value 25)
+	 (let ([value (read-integer 2 #f)])
+	   (values tag value))]
+	[(= value 26)
+	 (let ([value (read-integer 4 #f)])
+	   (values tag value))]
+	[(= value 27)
+	 (let ([value (read-integer 8 #f)])
+	   (values tag value))]
+	[else (error "Unsupported length in CBOR")]))
 
 ;;; Write a hash table out.  This takes an alist, pre-encodes all of
 ;;; the keys so that they can be sorted according to the CBOR rules,
@@ -123,6 +157,46 @@
 	[else
 	  (error "Unsupported CBOR item" datum)]))
 
+(define (read-cbor)
+  (define-values (tag value) (read-tagval))
+  (case tag
+    [(0) value]
+    [(1) (- -1 value)]
+    [(2) (read-bytes* value)]
+    [(3) (bytes->string/utf-8 (read-bytes* value))]
+
+    ;; Arbitrarily decide to read arrays as lists.
+    [(4) (for/list ([i (in-range value)])
+	   (read-cbor))]
+
+    ;; When we read in maps, if the key is a string, make it a symbol,
+    ;; so that the hasheqv will work.
+    [(5) (let ([result (make-hasheqv)])
+	   (for ([i (in-range value)])
+	     (let* ([key0 (read-cbor)]
+		    [value (read-cbor)]
+		    [key (if (string? key0)
+			   (string->symbol key0)
+			   key0)])
+	       (hash-set! result key value)))
+	   result)]
+    [(6) (let ([item (read-cbor)])
+	   (cbor-tag value item))]
+    [(7) (case value
+	   [(20) #f]
+	   [(21) #t]
+	   [(22) (cbor-null)]
+	   [else (error "TODO: Support other #7.xxx value" value)])]
+
+    [else (error "Unsupported tag")]))
+
 ;;; A convertor.
-(define (cbor->bytes datum)
-  (dump (let-to-bytes (write-cbor datum))))
+(define (encode-cbor datum)
+  (let-to-bytes (write-cbor datum)))
+
+(define (tout datum)
+  (dump (encode-cbor datum)))
+
+(define (decode-cbor bstr)
+  (let-from-bytes (bstr)
+		  (read-cbor)))
