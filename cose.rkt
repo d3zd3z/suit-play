@@ -2,8 +2,16 @@
 
 (require
   (only-in file/sha1 hex-string->bytes)
+  crypto
+  crypto/libcrypto
+  crypto/sodium
   "dump.rkt"
   "cbor.rkt")
+
+(provide check-cose)
+
+;;; Set this up, best not here.
+(crypto-factories (list libcrypto-factory sodium-factory))
 
 ;;; CBOR Object Signing and Encryption (COSE)
 ;;; RFC8152
@@ -16,8 +24,108 @@
 ;;; 16 - cose-encrypt0 COSE_Encrypt0
 ;;; 97 - cose-mac      COSE_Mac
 ;;; 17 - cose-mac0     COSE_Mac0
-
+;;;
+;;; Headers = (
+;;;   protected : empty_or_serialized_map,
+;;;   unprotected : header_map
+;;; )
+;;;
+;;; header_map = {
+;;;   Generic_Headers,
+;;;   * label => values
+;;; }
+;;;
+;;; Generic_Headers = (
+;;;     ? 1 => int / tstr,  ; algorithm identifier
+;;;     ? 2 => [+label],    ; criticality
+;;;     ? 3 => tstr / int,  ; content type
+;;;     ? 4 => bstr,        ; key identifier
+;;;     ? 5 => bstr,        ; IV
+;;;     ? 6 => bstr,        ; Partial IV
+;;;     ? 7 => COSE_Signature / [+COSE_Signature] ; Counter signature
+;;; )
+;;;
+;;; empty_or_serialized_map = bstr .cbor header_map / bstr .size 0
+;;;
+;;; COSE_Sign1 = [
+;;;   Headers,
+;;;   payload : bstr / nil,
+;;;   signature : bstr
+;;; ]
+;;;
+;;; COSE_Sign = [
+;;;     Headers,
+;;;     Payload : bstr / nil,
+;;;     signatures : [+ COSE_Signature]
+;;; ]
+;;;
+;;; COSE_Signature = [
+;;;     Headers,
+;;;     signature : bstr
+;;; ]
+;;;
+;;; Sig_structure = [
+;;;     context : "Signature" / "Signature1" / "CounterSignature",
+;;;     body_protected : empty_or_serialized_map,
+;;;     ? sign_protected : empty_or_serialized_map,
+;;;     external_aad : bstr,
+;;;     payload : bstr
+;;; ]
+;;;
+;;; Algorithms from RFC8152:
+;;;   ES256  -7   ECDSA w/ SHA-256
+;;;   ES384  -35  ECDSA w/ SHA-384
+;;;   ES512  -36  ECDSA w/ SHA-512
+;;;
+;;; Key types:
+;;;   prime256v1 (P-256): 1.2.840.10045.3.1.7
+;;;   secp384r1  (P-384): 1.3.132.0.34
+;;;   secp521r1  (P-521): 1.3.132.0.35
+;;;
 ;;; First, let's support cose-sign and cose-sign1
+
+;;; These routines are generally written to accept decoded cbor (in
+;;; the sexp-like format from cbor.rkt.  We can accept COSE_Sign1 and
+;;; COSE_Sign with and without the initial cbor tag.  If present the
+;;; CBOR tag must be correct for the contents, otherwise we try to
+;;; detect it.
+
+;;; Validate a COSE signature block.
+(define (check-cose cbr
+		    #:external [external #""])
+  (match cbr
+    [(struct cbor-tag (18 data)) ;; CBOR_Sign1
+     (check-cose data
+		 #:external external)]  ;; TODO: Make sure it is a sign1.
+    [(struct cbor-tag (98 data)) ;; CBOR_Sign
+     (check-cose data
+		 #:external external)]  ;; TODO: Make sure it is a sign.
+    [(list
+       (? bytes? protected)
+       (? hash? unprotected)
+       (and payload (or (? bytes? _) (? cbor-null? _)))
+       (? bytes? signature))
+     (define prot-map (decode-protected protected))
+     (when (cbor-null? payload)
+       (error "TODO: Handle external payload"))
+     (define to-be-signed
+       (encode-cbor
+	 (list "Signature1"
+	       protected
+	       external
+	       payload)))
+     ;; TODO: Validate the contents of the two maps.
+     (printf "COSE_Sign1 found: ~a\n" prot-map)
+     (dump to-be-signed)]
+
+    [else (error "TODO" cbr)]))
+
+;;; The protected map can be either a null, which results in an empty
+;;; map, or actually a map.
+(define (decode-protected item)
+  (match item
+    [(? cbor-null? _) (hasheq)]
+    [(? bytes? item) (decode-cbor item)]))
 
 ;; Examples/rsa-pss-examples/rsa-pss-01.json
 (define *sample1*

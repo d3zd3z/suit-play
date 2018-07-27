@@ -1,6 +1,7 @@
-#lang racket
+#lang racket/base
 
 (require
+  racket/port
   binaryio
   "dump.rkt")
 
@@ -9,11 +10,13 @@
   cbor-null-object cbor-null?
   write-cbor read-cbor
   encode-cbor decode-cbor
+  integer->bytes bytes->integer
   tout)
 
 ;;; CBOR tags need their own representation, which we represent with
 ;;; this transparent struct.  The first field is the tag number, and
-;;; the second is the item.
+;;; the second is the item.  This is only used for tags beyond the
+;;; basic ones defined by CBOR.
 (struct cbor-tag (tag data) #:transparent)
 
 ;;; The null value is defined by this empty struct, use cbor-null? to
@@ -59,7 +62,7 @@
 	[(< value 65536)
 	 (write-byte (bitwise-ior (arithmetic-shift tag 5) 25))
 	 (write-integer value 2 #f)]
-	[(< value 4294967295)
+	[(< value 4294967296)
 	 (write-byte (bitwise-ior (arithmetic-shift tag 5) 26))
 	 (write-integer value 4 #f)]
 	[else
@@ -101,12 +104,38 @@
     (write-bytes (car kv))
     (write-cbor (cdr kv))))
 
+;;; Convert a large integer into a minimual number of bytes to
+;;; represent it.  The representation is big-endian.
+(define (integer->bytes num)
+  (let loop ([result '()]
+	     [num num])
+    (if (positive? num)
+      (loop (cons (bitwise-and num #xff) result)
+	    (arithmetic-shift num -8))
+      (list->bytes result))))
+
+;;; Convert a byte sequence into the integer representing it (big
+;;; endian).
+(define (bytes->integer bstr)
+  (for/fold ([result 0])
+    ([byte (in-bytes bstr)])
+    (bitwise-ior (arithmetic-shift result 8) byte)))
+
 (define (write-cbor datum)
   (cond [(exact-nonnegative-integer? datum)
-	 (write-tagval 0 datum)]
+	 (if (>= datum (expt 2 64))
+	   (let ([binary (integer->bytes datum)])
+	     (write-tagval 6 2)
+	     (write-cbor binary))
+	   (write-tagval 0 datum))]
 	;; TODO: Handle integers that don't fit in 64-bits.
 	[(integer? datum)
-	 (write-tagval 1 (- -1 datum))]
+	 (if (< datum (- (expt 2 64)))
+	   (let* ([neg-datum (- -1 datum)]
+		  [binary (integer->bytes neg-datum)])
+	     (write-tagval 6 3)
+	     (write-cbor binary))
+	   (write-tagval 1 (- -1 datum)))]
 	[(bytes? datum)
 	 (write-tagval 2 (bytes-length datum))
 	 (write-bytes datum)]
@@ -181,7 +210,10 @@
 	       (hash-set! result key value)))
 	   result)]
     [(6) (let ([item (read-cbor)])
-	   (cbor-tag value item))]
+	   (case value
+	     [(2) (bytes->integer item)]
+	     [(3) (- -1 (bytes->integer item))]
+	     [else (cbor-tag value item)]))]
     [(7) (case value
 	   [(20) #f]
 	   [(21) #t]
