@@ -196,8 +196,8 @@
       ;; here to avoid ambiguity with the top-level rule.
       [grpent
 	((occur memberkey type optcom) (list 'memberkey $1 $2 $3))
-	((occur ID genericarg optcom) (list 'genericname $2 $3))
-	((occur LPAREN group RPAREN optcom) (list 'nestgroup $3)) ]
+	((occur ID genericarg optcom) (list 'genericname $1 $2 $3))
+	((occur LPAREN group RPAREN optcom) (list 'nestgroup $1 $3)) ]
 
       ;; The occurences can be '*' possibly surrounded by digits (no
       ;; space), or '+' or '?'.
