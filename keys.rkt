@@ -10,7 +10,10 @@
   racket/pretty
   "cbor.rkt"
   "dump.rkt"
+  "pem.rkt"
   )
+
+(provide load-ec-key)
 
 ;; This is specific to the EC private key
 (define EC-PRIVATE
@@ -21,6 +24,13 @@
 	[algorithm OBJECT-IDENTIFIER]
 	[parameter OBJECT-IDENTIFIER])]
     [key OCTET-STRING]))
+
+(define ECPrivateKey
+  (SEQUENCE
+    [version INTEGER]
+    [privateKey OCTET-STRING]
+    [parameters #:explicit 0 OBJECT-IDENTIFIER #:optional]
+    [publicKey #:explicit 1 BIT-STRING #:optional]))
 
 (define (generate-rsa-key)
   (define key (generate-private-key 'rsa '((nbits 2048))))
@@ -50,6 +60,21 @@
   (pretty-print (bytes->asn1/DER ANY pub))
   (newline)
   )
+
+(define (load-ec-key path)
+  (define pems (cadadr (call-with-input-file path read-all-pem)))
+  (define data (bytes->asn1/DER ECPrivateKey pems))
+  (define oid (hash-ref data 'parameters))
+  (define priv-key (hash-ref data 'privateKey))
+  (define pub-key (bit-string-bytes (hash-ref data 'publicKey)))
+  (define priv-num (bytes->integer priv-key))
+  ; (display "priv:\n")
+  ; (dump priv-key)
+  ; (display "pub:\n")
+  ; (dump pub-key)
+  (datum->pk-key
+    (list 'ec 'private oid pub-key priv-num)
+    'rkt-private))
 
 ;;; Curves used in RFC8152:
 ;;;   prime256v1
